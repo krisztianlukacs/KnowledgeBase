@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prokb"
+version = "0.1.0"
+description = "Per-project semantic knowledge base with MCP server — pipx-installable, configurable embedding model + source language."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Krisztian Lukacs" }]
+license = { text = "MIT" }
+keywords = ["knowledge-base", "semantic-search", "chromadb", "mcp", "claude-code"]
+
+dependencies = [
+  "chromadb>=1.0",
+  "sentence-transformers>=5.0",
+  "mcp>=1.0",
+  "pyyaml>=6.0",
+]
+
+[project.scripts]
+kb = "prokb.cli:main"
+prokb = "prokb.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/krisztianlukacs/KnowledgeBase"
+Issues = "https://github.com/krisztianlukacs/KnowledgeBase/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+prokb = [
+  "skills/knowledge-query/SKILL.md",
+  "skills/knowledge-update/SKILL.md",
+  "templates/*.yaml",
+]
