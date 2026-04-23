@@ -60,19 +60,55 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_update(args: argparse.Namespace) -> int:
     from .config import load_config
     from .indexer import run_incremental
+    from .scanner import compute_pending, load_manifest, save_manifest
 
     cfg = load_config()
     if args.status:
         return cmd_status(args)
 
-    # Translation step is the responsibility of the Claude Code skill or cron
-    # script; the CLI only runs the deterministic scan + index.
-    # If --index-only, just index. Otherwise also indicate pending translations.
+    # Step 1: scan files → update manifest
     if not args.index_only:
-        print("Tip: translation step (if needed) should be done by the "
-              "`/knowledge-update` skill or an external agent. This CLI "
-              "runs scan + index only.", file=sys.stderr)
+        pending, deleted, stats = compute_pending(cfg)
+        manifest = load_manifest(cfg)
 
+        # Apply new/changed files to manifest
+        translation_enabled = cfg["translation"].get("enabled", False)
+        source_lang = cfg["translation"]["source_language"]
+
+        for p in pending:
+            # If translation is disabled, treat source-language files the same
+            # as target-language — they go straight to pending_index.
+            status = p["status"]
+            if not translation_enabled and status == "pending_translation":
+                status = "pending_index"
+            manifest[p["relpath"]] = {
+                "original_hash": p["hash"],
+                "original_mtime": p["mtime"],
+                "language": p["language"],
+                "date": p["date"],
+                "status": status,
+                "size": p["size"],
+                "source_mtime": p["mtime"],
+            }
+
+        # Mark deleted entries
+        for d in deleted:
+            if d["relpath"] in manifest:
+                manifest[d["relpath"]]["status"] = "deleted"
+
+        save_manifest(cfg, manifest)
+        n_ready = sum(1 for e in manifest.values() if e.get("status") == "pending_index")
+        n_need_trans = sum(1 for e in manifest.values() if e.get("status") == "pending_translation")
+        print(f"Scanner: {len(pending)} new/changed, {len(deleted)} deleted, "
+              f"{n_ready} ready to index, {n_need_trans} need translation",
+              file=sys.stderr)
+
+        if n_need_trans > 0 and translation_enabled:
+            print(f"Tip: run the /knowledge-update skill (or equivalent AI agent) "
+                  f"to translate the {n_need_trans} source-language files before "
+                  f"they can be indexed.", file=sys.stderr)
+
+    # Step 2: index all pending_index files
     run_incremental(cfg)
     return 0
 
