@@ -54,7 +54,9 @@ DEFAULTS: dict[str, Any] = {
             ".git", ".venv", "venv", "env", "__pycache__", "node_modules",
             "dist", "build", ".next", "target", ".cache", ".idea", ".vscode",
             ".ipynb_checkpoints", ".mypy_cache", ".ruff_cache", ".pytest_cache",
-            "knowledge",   # don't self-index the chroma_db / manifest / translations
+            "knowledge",   # don't self-index chroma_db / manifest / translations
+            #              NOTE: knowledge/diary/ is whitelisted in scanner.py —
+            #              `kb diary` entries ARE indexed despite this exclusion.
             ".mempalace", "mlruns", "data",
         ],
         "exclude_files": [CONFIG_FILENAME, "manifest.json"],
@@ -192,7 +194,8 @@ scan:
     - .venv
     - node_modules
     - __pycache__
-    - knowledge            # self-directory must be excluded
+    - knowledge            # self-directory excluded (chroma_db/manifest/translations);
+    #                        knowledge/diary/ is still indexed — see scanner.py whitelist
     - mlruns
     - data
   exclude_files:

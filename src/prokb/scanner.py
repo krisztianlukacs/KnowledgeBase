@@ -139,7 +139,13 @@ def scan_files(config):
             relpath = str(fpath.relative_to(root))
 
             parts = Path(relpath).parts
-            if any(excl in parts for excl in exclude_dirs):
+            # Diary entries live under knowledge/diary/ and ARE user content that
+            # must be indexed — even though knowledge/ itself is excluded (it holds
+            # the chroma_db / manifest / translations artifacts). Whitelist them
+            # explicitly so the exclusion of `knowledge` doesn't swallow the diary.
+            # (Fixes: diary entries written by `kb diary` were never indexed.)
+            is_diary = len(parts) >= 2 and parts[0] == "knowledge" and parts[1] == "diary"
+            if not is_diary and any(excl in parts for excl in exclude_dirs):
                 continue
             if relpath in exclude_files:
                 continue
