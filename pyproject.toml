@@ -39,3 +39,9 @@ prokb = [
   "skills/knowledge-update/SKILL.md",
   "templates/*.yaml",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The model-backed index+query roundtrip is opt-in (it downloads/loads the
+# sentence-transformers model). Run it with: KB_RUN_INTEGRATION=1 pytest
+addopts = "-q"
