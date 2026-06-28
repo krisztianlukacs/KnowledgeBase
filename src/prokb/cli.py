@@ -57,23 +57,19 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_update(args: argparse.Namespace) -> int:
-    from .config import load_config
+def _scan_and_index(cfg, index_only: bool = False) -> int:
+    """Scan files → update manifest → index pending files. Shared by `kb update`
+    and `kb diary --update`. Returns the number of files indexed this run."""
     from .indexer import run_incremental
     from .scanner import compute_pending, load_manifest, save_manifest
 
-    cfg = load_config()
-    if args.status:
-        return cmd_status(args)
-
     # Step 1: scan files → update manifest
-    if not args.index_only:
+    if not index_only:
         pending, deleted, stats = compute_pending(cfg)
         manifest = load_manifest(cfg)
 
         # Apply new/changed files to manifest
         translation_enabled = cfg["translation"].get("enabled", False)
-        source_lang = cfg["translation"]["source_language"]
 
         for p in pending:
             # If translation is disabled, treat source-language files the same
@@ -109,7 +105,17 @@ def cmd_update(args: argparse.Namespace) -> int:
                   f"they can be indexed.", file=sys.stderr)
 
     # Step 2: index all pending_index files
-    run_incremental(cfg)
+    return run_incremental(cfg)
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    from .config import load_config
+
+    cfg = load_config()
+    if args.status:
+        return cmd_status(args)
+
+    _scan_and_index(cfg, index_only=args.index_only)
     return 0
 
 
@@ -318,7 +324,14 @@ def cmd_diary(args: argparse.Namespace) -> int:
 """
     fname.write_text(header + args.content)
     print(f"Wrote {fname}")
-    print("Run `kb update` to index this entry into the knowledge base.")
+
+    # --update indexes the new entry immediately (write + index in one call), so a
+    # development summary lands in the searchable KB without a second command.
+    if getattr(args, "update", False):
+        n = _scan_and_index(cfg)
+        print(f"Indexed ({n} file(s) processed).")
+    else:
+        print("Run `kb update` to index this entry into the knowledge base.")
     return 0
 
 
@@ -380,6 +393,8 @@ def main() -> None:
     s_di.add_argument("--session", default=None)
     s_di.add_argument("--agent", default=None)
     s_di.add_argument("--tags", default=None)
+    s_di.add_argument("--update", action="store_true",
+                      help="Index the entry immediately (write + kb update in one call)")
     s_di.set_defaults(func=cmd_diary)
 
     args = p.parse_args()
