@@ -21,8 +21,9 @@ import json
 import sys
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer  # mcp 2.x (FastMCP was renamed)
 
+from . import __version__
 from .indexer import get_collection, load_config, load_manifest
 from .query import query as _raw_query
 
@@ -30,8 +31,9 @@ from .query import query as _raw_query
 _config = load_config()
 _project_name = _config.get("project_name", "project")
 
-mcp = FastMCP(
+mcp = MCPServer(
     f"{_project_name}-knowledge",
+    version=__version__,
     instructions=(
         f"Semantic search over the {_project_name} project knowledge base. "
         "Indexed markdown and code files with optional translation. Use the "
