@@ -22,9 +22,12 @@ def extract_code_blocks(text):
     """Replace code blocks with placeholders, return mapping."""
     blocks = {}
     counter = [0]
+    prefix = "__CODEBLOCK_"
+    while prefix in text:
+        prefix = "_" + prefix
 
     def replacer(match):
-        key = f"__CODEBLOCK_{counter[0]}__"
+        key = f"{prefix}{counter[0]}__"
         blocks[key] = match.group(0)
         counter[0] += 1
         return key
@@ -51,7 +54,7 @@ def split_by_headers(text):
 
     # Split on ## and ### headers (not # — that's the title)
     # Pattern matches lines starting with ## or ###
-    parts = re.split(r"(?=^#{2,3}\s+)", text_clean, flags=re.MULTILINE)
+    parts = re.split(r"(?=^#{2,3}(?:[ \t]+|$))", text_clean, flags=re.MULTILINE)
 
     sections = []
     for part in parts:
@@ -60,10 +63,10 @@ def split_by_headers(text):
             continue
 
         # Extract header if present
-        header_match = re.match(r"^(#{2,3})\s+(.+?)$", part, re.MULTILINE)
+        header_match = re.match(r"^(#{2,3})(?:[ \t]+(.*))?$", part, re.MULTILINE)
         if header_match:
             level = len(header_match.group(1))
-            header = header_match.group(2).strip()
+            header = (header_match.group(2) or "").strip()
             content = part[header_match.end():].strip()
         else:
             header = "Introduction"
@@ -118,42 +121,69 @@ def merge_small_sections(sections, min_tokens):
     return merged
 
 
+def _split_text(text, budget):
+    """Prefer line/word boundaries, with a hard cap even for one long word."""
+    while len(text) > budget:
+        end = text.rfind("\n", 0, budget + 1)
+        if end <= 0:
+            end = text.rfind(" ", 0, budget + 1)
+        if end <= 0:
+            end = budget
+        yield text[:end]
+        text = text[end:]
+        # Retain whitespace, but ensure the next iteration makes progress.
+    if text:
+        yield text
+
+
 def split_large_sections(sections, max_tokens):
-    """Split sections that are too large on paragraph boundaries."""
+    """Split oversized text while keeping every fenced block balanced."""
+    if max_tokens < 1:
+        raise ValueError("max_tokens must be positive")
+    budget = max_tokens * 4
     result = []
-
     for section in sections:
-        tokens = estimate_tokens(section["content"])
-
-        if tokens <= max_tokens:
+        content = section["content"]
+        if estimate_tokens(content) <= max_tokens:
             result.append(section)
             continue
-
-        # Split on double newlines (paragraphs)
-        paragraphs = re.split(r"\n\n+", section["content"])
-        current_chunk = ""
-        part_idx = 0
-
-        for para in paragraphs:
-            # Check if adding this paragraph would exceed limit
-            if current_chunk and estimate_tokens(current_chunk + "\n\n" + para) > max_tokens:
-                result.append({
-                    "header": section["header"] + (f" (part {part_idx + 1})" if part_idx > 0 else ""),
-                    "level": section["level"],
-                    "content": current_chunk.strip(),
-                })
-                current_chunk = para
-                part_idx += 1
+        pieces = []
+        # Treat fenced blocks as units before splitting ordinary paragraphs.
+        for unit in re.split(r"(```[\s\S]*?```)", content):
+            if not unit:
+                continue
+            if unit.startswith("```"):
+                if len(unit) <= budget:
+                    pieces.append(unit)
+                    continue
+                opener, sep, body = unit[:-3].partition("\n")
+                if not sep:
+                    opener, body = "```", unit[3:-3]
+                overhead = len(opener) + len("\n\n```")
+                if budget <= overhead:
+                    raise ValueError("max_tokens is too small for the code fence")
+                for part in _split_text(body, budget - overhead):
+                    pieces.append(opener + "\n" + part + "\n```")
             else:
-                current_chunk = (current_chunk + "\n\n" + para) if current_chunk else para
-
-        if current_chunk.strip():
-            result.append({
-                "header": section["header"] + (f" (part {part_idx + 1})" if part_idx > 0 else ""),
-                "level": section["level"],
-                "content": current_chunk.strip(),
-            })
-
+                for paragraph in re.split(r"\n\n+", unit):
+                    pieces.extend(_split_text(paragraph, budget))
+        chunks = []
+        current = ""
+        for piece in pieces:
+            if not piece.strip():
+                continue
+            candidate = current + "\n\n" + piece if current else piece
+            if len(candidate) > budget and current:
+                chunks.append(current)
+                current = piece
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        for i, chunk in enumerate(chunks):
+            result.append({**section,
+                           "header": section["header"] + (f" (part {i + 1})" if i else ""),
+                           "content": chunk.strip()})
     return result
 
 

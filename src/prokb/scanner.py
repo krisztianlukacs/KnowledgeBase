@@ -17,19 +17,20 @@ import os
 import re
 import sys
 import time
+import tempfile
+from datetime import date
 from pathlib import Path
 
-import yaml
-
 try:
-    from langdetect import detect, LangDetectException  # type: ignore
+    from langdetect import DetectorFactory, detect, LangDetectException  # type: ignore
+    DetectorFactory.seed = 0  # langdetect is randomised; same file -> same language
     _HAS_LANGDETECT = True
 except ImportError:
     _HAS_LANGDETECT = False
 
 from .config import (
     load_config as _load_config, manifest_path as _manifest_path,
-    project_root,
+    ConfigError,
 )
 
 
@@ -40,7 +41,7 @@ def load_config():
 def load_manifest(config):
     mp = _manifest_path(config)
     if mp.exists():
-        with open(mp) as f:
+        with open(mp, encoding="utf-8") as f:
             return json.load(f)
     return {}
 
@@ -48,8 +49,18 @@ def load_manifest(config):
 def save_manifest(config, manifest):
     mp = _manifest_path(config)
     mp.parent.mkdir(parents=True, exist_ok=True)
-    with open(mp, "w") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                         dir=mp.parent, delete=False) as f:
+            temp_path = Path(f.name)
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, mp)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def file_hash(filepath):
@@ -112,20 +123,23 @@ def detect_language(filepath, source_lang: str = "hu", target_lang: str = "en"):
 
 def extract_date(filepath, relpath):
     """Extract date from file path or name. Returns YYYY-MM-DD or None."""
-    # Try path patterns like 2026-03-31
     match = re.search(r"(\d{4}-\d{2}-\d{2})", str(relpath))
-    if match:
-        return match.group(1)
-    # Try filename patterns
-    match = re.search(r"(\d{4})(\d{2})(\d{2})", Path(filepath).stem)
-    if match:
-        return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    candidate = match.group(1) if match else None
+    if candidate is None:
+        match = re.search(r"(\d{4})(\d{2})(\d{2})", Path(filepath).stem)
+        if match:
+            candidate = "-".join(match.groups())
+    if candidate:
+        try:
+            return date.fromisoformat(candidate).isoformat()
+        except ValueError:
+            pass
     return None
 
 
 def scan_files(config):
     """Scan files matching include patterns, return dict of relpath → file info."""
-    root = Path(config["project_root"])
+    root = Path(config["project_root"]).resolve()
     scan = config.get("scan", {})
     include_patterns = scan.get("include", ["**/*.md"])
     exclude_dirs = set(scan.get("exclude_dirs", []))
@@ -153,8 +167,10 @@ def scan_files(config):
         return result
 
     for pattern in include_patterns:
+        if ".." in Path(pattern).parts or Path(pattern).is_absolute():
+            raise ConfigError("Scan include patterns must stay inside project_root")
         for fpath in root.glob(pattern):
-            if not fpath.is_file():
+            if not fpath.resolve().is_relative_to(root) or not fpath.is_file():
                 continue
             if in_worktree(fpath):
                 continue
@@ -167,7 +183,9 @@ def scan_files(config):
             # explicitly so the exclusion of `knowledge` doesn't swallow the diary.
             # (Fixes: diary entries written by `kb diary` were never indexed.)
             is_diary = len(parts) >= 2 and parts[0] == "knowledge" and parts[1] == "diary"
-            if not is_diary and any(excl in parts for excl in exclude_dirs):
+            if not is_diary and any((excl in parts if "/" not in excl else
+                                 relpath.startswith(excl.rstrip("/") + "/"))
+                                for excl in exclude_dirs):
                 continue
             if relpath in exclude_files:
                 continue
@@ -186,8 +204,16 @@ def compute_pending(config):
     """Compare current files against manifest, return pending actions."""
     manifest = load_manifest(config)
     current_files = scan_files(config)
-    root = Path(config["project_root"])
+    translation = config.get("translation", {})
+    source_lang = translation.get("source_language", "hu")
+    target_lang = translation.get("target_language", "en")
 
+    def language(path):
+        if source_lang == "hu" and target_lang == "en":
+            return detect_language(path)
+        return detect_language(path, source_lang, target_lang)
+
+    refreshed = {}
     pending = []
     unchanged = 0
     new_files = 0
@@ -201,10 +227,10 @@ def compute_pending(config):
         if entry is None:
             # New file
             h = file_hash(info["abspath"])
-            lang = detect_language(info["abspath"])
+            lang = language(info["abspath"])
             date = extract_date(info["abspath"], relpath)
             new_files += 1
-            status = "pending_translation" if lang == "hu" else "pending_index"
+            status = "pending_translation" if lang == source_lang else "pending_index"
             pending.append({
                 "relpath": relpath,
                 "action": "new",
@@ -218,22 +244,24 @@ def compute_pending(config):
             continue
 
         # Existing file — check if changed
-        if abs(info["mtime"] - entry.get("original_mtime", 0)) < 0.001:
+        if (abs(info["mtime"] - entry.get("original_mtime", 0)) < 0.001
+                and info["size"] == entry.get("size")):
             unchanged += 1
             continue
 
         # mtime changed — check hash
         h = file_hash(info["abspath"])
         if h == entry.get("original_hash"):
-            # Content unchanged, just update mtime in manifest
+            # Persist the new stat data under the writer lock below.
+            refreshed[relpath] = (entry.get("original_hash"), info)
             unchanged += 1
             continue
 
         # Content changed
-        lang = detect_language(info["abspath"])
+        lang = language(info["abspath"])
         date = extract_date(info["abspath"], relpath)
         changed_files += 1
-        status = "pending_translation" if lang == "hu" else "pending_index"
+        status = "pending_translation" if lang == source_lang else "pending_index"
         pending.append({
             "relpath": relpath,
             "action": "changed",
@@ -264,6 +292,18 @@ def compute_pending(config):
         "indexed": sum(1 for e in manifest.values() if e.get("status") == "indexed"),
     }
 
+    if refreshed:
+        from .lock import LockHeldError, write_lock
+        try:
+            with write_lock(config):
+                latest = load_manifest(config)
+                for relpath, (expected_hash, info) in refreshed.items():
+                    entry = latest.get(relpath)
+                    if entry and entry.get("original_hash") == expected_hash:
+                        entry.update(original_mtime=info["mtime"], size=info["size"])
+                save_manifest(config, latest)
+        except LockHeldError:
+            pass  # A running writer owns the manifest; refresh next time.
     return pending, deleted, stats
 
 
@@ -314,24 +354,26 @@ def main():
         return
 
     if args.pending or args.init_manifest:
-        pending, deleted, stats = compute_pending(config)
-
         if args.init_manifest:
-            # Write all pending entries to manifest as pending
-            manifest = load_manifest(config)
-            for p in pending:
-                manifest[p["relpath"]] = {
-                    "original_hash": p["hash"],
-                    "original_mtime": p["mtime"],
-                    "language": p["language"],
-                    "date": p["date"],
-                    "status": p["status"],
-                    "size": p["size"],
-                }
-            save_manifest(config, manifest)
-            print(f"Manifest initialized: {len(pending)} files tracked")
+            from .lock import write_lock
+            with write_lock(config):
+                pending, deleted, stats = compute_pending(config)
+                # Write all pending entries to manifest as pending
+                manifest = load_manifest(config)
+                for p in pending:
+                    manifest[p["relpath"]] = {
+                        "original_hash": p["hash"],
+                        "original_mtime": p["mtime"],
+                        "language": p["language"],
+                        "date": p["date"],
+                        "status": p["status"],
+                        "size": p["size"],
+                    }
+                save_manifest(config, manifest)
+                print(f"Manifest initialized: {len(pending)} files tracked")
             return
 
+        pending, deleted, stats = compute_pending(config)
         if args.json:
             output = {
                 "pending": pending,

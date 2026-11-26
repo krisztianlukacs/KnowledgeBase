@@ -36,6 +36,8 @@ Schema (v1):
 from __future__ import annotations
 
 import os
+import copy
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -95,7 +97,7 @@ _COLLECTION_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,510}[a-zA-Z0-9]$")
 
 def validate_collection_name(name: str) -> str:
     """Return `name` if chroma accepts it, else raise ConfigError."""
-    if not isinstance(name, str) or not _COLLECTION_RE.match(name):
+    if not isinstance(name, str) or not _COLLECTION_RE.fullmatch(name):
         raise ConfigError(
             f"Invalid collection_name {name!r}: ChromaDB requires 3-512 characters "
             f"from [a-zA-Z0-9._-], starting and ending with a letter or digit."
@@ -130,7 +132,7 @@ def find_config(start: Path | None = None) -> Path:
     cur = start
     while True:
         candidate = cur / CONFIG_FILENAME
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
         if cur.parent == cur:
             raise ConfigError(
@@ -141,8 +143,10 @@ def find_config(start: Path | None = None) -> Path:
 
 
 def _deep_merge(base: dict, overlay: dict) -> dict:
-    out = dict(base)
+    out = copy.deepcopy(base)
     for k, v in overlay.items():
+        if v is None and isinstance(out.get(k), dict):
+            continue
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = _deep_merge(out[k], v)
         else:
@@ -218,7 +222,7 @@ def write_default_config(dest: Path, project_name: str | None = None,
 # See: https://github.com/krisztianlukacs/KnowledgeBase
 
 version: 1
-project_name: {project_name}
+project_name: {json.dumps(project_name)}
 collection_name: {collection_name}
 
 scan:
@@ -263,3 +267,12 @@ paths:
 """
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(body)
+
+
+def contained_path(root: Path, relpath: str) -> Path:
+    """Resolve a manifest path without allowing it outside its owning directory."""
+    root = root.resolve()
+    path = (root / relpath).resolve()
+    if not path.is_relative_to(root):
+        raise ConfigError(f"Path escapes its root: {relpath!r}")
+    return path

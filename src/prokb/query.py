@@ -16,8 +16,6 @@ import json
 import sys
 from pathlib import Path
 
-import yaml
-
 from .config import (
     load_config as _load_config, manifest_path as _manifest_path,
 )
@@ -33,7 +31,7 @@ def auto_reindex(config):
     if not mp.exists():
         return
 
-    with open(mp) as f:
+    with open(mp, encoding="utf-8") as f:
         manifest = json.load(f)
 
     pending = sum(1 for e in manifest.values() if e.get("status") == "pending_index")
@@ -85,12 +83,18 @@ def _exact_filtered_search(config, collection, question, top_k, path_filter, aft
 def query(config, question, top_k=10, after=None, path_filter=None, full=False, as_json=False):
     """Run semantic search and return results."""
     from .indexer import get_collection
+    from .scanner import load_manifest
 
+    if top_k < 1:
+        raise ValueError("top_k must be positive")
+    manifest = load_manifest(config)
+    pending_trans = sum(1 for e in manifest.values() if e.get("status") == "pending_translation")
     collection = get_collection(config)
 
     if collection.count() == 0:
         if as_json:
-            print(json.dumps({"error": "Index is empty. Run /knowledge-update first.", "results": []}))
+            print(json.dumps({"query": question, "error": "Index is empty. Run /knowledge-update first.",
+                              "results": [], "total_chunks": 0, "pending_translation": pending_trans}))
         else:
             print("Index is empty. Run /knowledge-update or `python knowledge/indexer.py --full` first.")
         return
@@ -121,7 +125,8 @@ def query(config, question, top_k=10, after=None, path_filter=None, full=False, 
 
     if not ids:
         if as_json:
-            print(json.dumps({"query": question, "results": [], "total_chunks": total}))
+            print(json.dumps({"query": question, "results": [], "total_chunks": total,
+                              "pending_translation": pending_trans}))
         else:
             print(f"No results for: \"{question}\"")
         return
@@ -129,7 +134,7 @@ def query(config, question, top_k=10, after=None, path_filter=None, full=False, 
     # Apply the path substring filter (and re-check `after`) in Python
     filtered = []
     for i in range(len(ids)):
-        meta = metadatas[i]
+        meta = metadatas[i] or {}
         if path_filter and path_filter not in meta.get("source_file", ""):
             continue
         if after and meta.get("date", "") < after:
@@ -153,14 +158,6 @@ def query(config, question, top_k=10, after=None, path_filter=None, full=False, 
     # Sort by score descending
     filtered.sort(key=lambda x: x["score"], reverse=True)
     filtered = filtered[:top_k]
-
-    # Count pending translations
-    mp = _manifest_path(config)
-    pending_trans = 0
-    if mp.exists():
-        with open(mp) as f:
-            manifest = json.load(f)
-        pending_trans = sum(1 for e in manifest.values() if e.get("status") == "pending_translation")
 
     if as_json:
         output = {
@@ -220,7 +217,9 @@ def main():
         sys.exit(1)
 
     config = load_config()
-    top_k = args.top or config.get("default_top_k", 10)
+    top_k = args.top if args.top is not None else config.get("default_top_k", 10)
+    if top_k < 1:
+        parser.error("--top must be positive")
 
     if not args.no_reindex:
         auto_reindex(config)

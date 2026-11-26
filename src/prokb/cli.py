@@ -96,7 +96,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _scan_and_index(cfg, index_only: bool = False) -> int:
+def _scan_and_index(cfg, index_only: bool = False, batch=None) -> int:
     """Scan files → update manifest → index pending files. Shared by `kb update`
     and `kb diary --update`. Returns the number of files indexed this run.
 
@@ -104,10 +104,10 @@ def _scan_and_index(cfg, index_only: bool = False) -> int:
     corrupt the HNSW index); raises LockHeldError if another writer is active."""
     from .lock import write_lock
     with write_lock(cfg):
-        return _scan_and_index_locked(cfg, index_only)
+        return _scan_and_index_locked(cfg, index_only, batch=batch)
 
 
-def _scan_and_index_locked(cfg, index_only: bool = False) -> int:
+def _scan_and_index_locked(cfg, index_only: bool = False, batch=None) -> int:
     from .indexer import run_incremental
     from .scanner import compute_pending, load_manifest, save_manifest
 
@@ -153,19 +153,22 @@ def _scan_and_index_locked(cfg, index_only: bool = False) -> int:
                   f"they can be indexed.", file=sys.stderr)
 
     # Step 2: index all pending_index files
-    return run_incremental(cfg)
+    return run_incremental(cfg, batch=batch)
 
 
 def cmd_update(args: argparse.Namespace) -> int:
     from .config import load_config
 
     cfg = load_config()
+    if args.batch < 1:
+        print("ERROR: --batch must be positive", file=sys.stderr)
+        return 2
     if args.status:
         return cmd_status(args)
 
     from .lock import LockHeldError
     try:
-        _scan_and_index(cfg, index_only=args.index_only)
+        _scan_and_index(cfg, index_only=args.index_only, batch=args.batch)
     except LockHeldError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
@@ -176,6 +179,9 @@ def cmd_query(args: argparse.Namespace) -> int:
     from .config import load_config
     from .query import query
 
+    if args.top < 1:
+        print("ERROR: --top must be positive", file=sys.stderr)
+        return 2
     cfg = load_config()
     query(
         cfg,
@@ -202,11 +208,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     error_count = sum(1 for e in manifest.values() if e.get("status") == "error")
     total_chunks = sum(e.get("chunk_count", 0) for e in manifest.values())
 
+    db_error = None
     try:
         coll = get_collection(cfg)
         chroma_n = coll.count()
     except Exception as e:
         chroma_n = -1
+        db_error = type(e).__name__
 
     out = {
         "project_name": cfg["project_name"],
@@ -222,8 +230,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         "embedding_model": cfg["embedding"]["model"],
         "translation_enabled": cfg["translation"]["enabled"],
     }
+    if db_error:
+        out["error"] = f"Database unavailable: {db_error}"
     print(json.dumps(out, indent=2))
-    return 0
+    return 1 if db_error else 0
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:
@@ -263,10 +273,16 @@ def cmd_install_mcp(args: argparse.Namespace) -> int:
     mcp_json = Path.cwd() / ".mcp.json"
     data = {"mcpServers": {}}
     if mcp_json.exists():
-        with open(mcp_json) as f:
-            data = json.load(f)
-        if "mcpServers" not in data:
-            data["mcpServers"] = {}
+        try:
+            with open(mcp_json, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict) or not isinstance(data.get("mcpServers", {}), dict):
+                raise ValueError("Expected an object with an mcpServers object")
+        except (OSError, ValueError) as exc:
+            print(f"ERROR: cannot read valid .mcp.json ({type(exc).__name__}); file unchanged.",
+                  file=sys.stderr)
+            return 1
+        data.setdefault("mcpServers", {})
 
     # Auto-derive project-knowledge as the MCP name
     yaml_path = Path.cwd() / CONFIG_FILENAME
@@ -408,7 +424,16 @@ def cmd_diary(args: argparse.Namespace) -> int:
 ---
 
 """
-    fname.write_text(header + body)
+    base = fname
+    suffix = 1
+    while True:
+        try:
+            with fname.open("x", encoding="utf-8") as stream:
+                stream.write(header + body)
+            break
+        except FileExistsError:
+            suffix += 1
+            fname = base.with_name(f"{base.stem}-{suffix}{base.suffix}")
     print(f"Wrote {fname}")
 
     # --update indexes the new entry immediately (write + index in one call), so a

@@ -70,7 +70,6 @@ def tracked(cfg, name="a.md", status="indexed", mtime_offset=0):
     return path
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V10, ticket #13: remove in the fix")
 def test_v10_include_escapes_root(cfg, tmp_path):
     (tmp_path / "outside.md").write_text("outside project")
     cfg["scan"]["include"] = ["../**/*.md"]
@@ -83,7 +82,6 @@ def test_v10_include_escapes_root(cfg, tmp_path):
                for info in found.values())
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V11, ticket #13: remove in the fix")
 def test_v11_deleted_translation_cannot_escape(cfg, collection):
     cfg["translation"]["enabled"] = True
     translations = config.translations_dir(cfg)
@@ -98,28 +96,24 @@ def test_v11_deleted_translation_cannot_escape(cfg, collection):
     assert victim.exists(), "Deleting a translation must stay within translations_dir"
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V13, ticket #10: remove in the fix")
 def test_v13_disabled_translation_resumes_pending(cfg, collection):
     tracked(cfg, status="pending_translation")
     assert cli._scan_and_index(cfg) == 1
     assert scanner.load_manifest(cfg)["a.md"]["status"] == "indexed"
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V14, ticket #9: remove in the fix")
 def test_v14_long_paragraph_respects_max_tokens():
     chunks = chunker.chunk_markdown("word " * 100, max_tokens=20, min_tokens=0)
     assert chunks
     assert all(chunker.estimate_tokens(c["content"]) <= 20 for c in chunks)
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V15, ticket #9: remove in the fix")
 def test_v15_split_preserves_code_fences():
     text = "```python\n" + "x = 1\n" * 10 + "\n\n" + "y = 2\n" * 10 + "```"
     chunks = chunker.chunk_markdown(text, max_tokens=20, min_tokens=0)
     assert all(c["content"].count("```") % 2 == 0 for c in chunks)
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V16, ticket #14: remove in the fix")
 def test_v16_multisegment_exclude(cfg):
     path = Path(cfg["project_root"]) / "docs/archive/a.md"
     path.parent.mkdir(parents=True)
@@ -128,14 +122,12 @@ def test_v16_multisegment_exclude(cfg):
     assert "docs/archive/a.md" not in scanner.scan_files(cfg)
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V17, ticket #14: remove in the fix")
 def test_v17_project_name_yaml_roundtrip(tmp_path):
     dest = tmp_path / "knowledgebase.yaml"
     config.write_default_config(dest, project_name="api # old")
     assert config.load_config(dest)["project_name"] == "api # old"
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V18, ticket #14: remove in the fix")
 def test_v18_empty_section_uses_defaults(tmp_path):
     dest = tmp_path / "knowledgebase.yaml"
     dest.write_text("project_name: example\nscan:\n  # include: [\"**/*.md\"]\n")
@@ -143,7 +135,6 @@ def test_v18_empty_section_uses_defaults(tmp_path):
     assert loaded["scan"] == config.DEFAULTS["scan"]
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V19, ticket #15: remove in the fix")
 def test_v19_concurrent_search_output_is_isolated(server, monkeypatch):
     a_entered, b_entered, a_printed = Event(), Event(), Event()
 
@@ -181,13 +172,11 @@ def test_v19_concurrent_search_output_is_isolated(server, monkeypatch):
     assert [json.loads(value) for value in outputs] == [{"query": "a"}, {"query": "b"}]
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V20, ticket #15: remove in the fix")
 def test_v20_reject_invalid_date(tmp_path):
     path = tmp_path / "report-12345678.md"
     assert scanner.extract_date(path, path.name) is None
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V21, ticket #15: remove in the fix")
 def test_v21_update_batch_limits_indexing(cfg, collection, monkeypatch):
     root = Path(cfg["project_root"])
     for name in ("a.md", "b.md"):
@@ -200,7 +189,6 @@ def test_v21_update_batch_limits_indexing(cfg, collection, monkeypatch):
     assert sum(e["status"] == "indexed" for e in manifest.values()) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V22, ticket #12: remove in the fix")
 def test_v22_lock_excludes_other_thread(cfg):
     def attempt():
         try:
@@ -215,7 +203,6 @@ def test_v22_lock_excludes_other_thread(cfg):
     assert outcome == "blocked"
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V24, ticket #12: remove in the fix")
 def test_v24_unchanged_hash_refreshes_mtime(cfg, collection, monkeypatch):
     tracked(cfg, mtime_offset=-10)
     real_hash = scanner.file_hash
@@ -228,20 +215,17 @@ def test_v24_unchanged_hash_refreshes_mtime(cfg, collection, monkeypatch):
     assert spy.call_count == 0, "An unchanged touched file must not be rehashed every update"
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V25, ticket #9: remove in the fix")
 def test_v25_empty_header_preserves_body():
     sections = chunker.split_by_headers("##\nFirst body line\nSecond body line")
     assert "First body line" in "\n".join(s["content"] for s in sections)
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V26, ticket #9: remove in the fix")
 def test_v26_literal_placeholder_preserved():
     original = "Literal __CODEBLOCK_0__\n\n```python\nx = 1\n```"
     protected, blocks = chunker.extract_code_blocks(original)
     assert chunker.restore_code_blocks(protected, blocks) == original
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V27, ticket #15: remove in the fix")
 def test_v27_null_metadata_query(cfg, collection, capsys):
     collection.query.return_value["metadatas"] = [[None]]
     query.query(cfg, "body", as_json=True)
@@ -250,7 +234,6 @@ def test_v27_null_metadata_query(cfg, collection, capsys):
     assert result["results"][0]["source_file"] == ""
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V28, ticket #15: remove in the fix")
 def test_v28_source_count_before_limit(server, monkeypatch):
     monkeypatch.setattr(server, "load_manifest", lambda cfg: {
         "a.md": {"status": "indexed"}, "b.md": {"status": "indexed"}})
@@ -259,7 +242,6 @@ def test_v28_source_count_before_limit(server, monkeypatch):
     assert result["total_matched"] == 2
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V29, ticket #11: remove in the fix")
 def test_v29_original_comment_is_indexed(cfg, collection):
     (Path(cfg["project_root"]) / "a.md").write_text("<!-- original design rationale -->\n\nBody")
     count, status = indexer.index_file(collection, cfg, "a.md", {"language": "en"})
@@ -268,7 +250,6 @@ def test_v29_original_comment_is_indexed(cfg, collection):
     assert any("original design rationale" in doc for doc in documents)
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V30, ticket #11: remove in the fix")
 def test_v30_directory_error_preserves_progress(cfg, collection):
     root = Path(cfg["project_root"])
     (root / "a.md").write_text("Valid source content")
@@ -282,7 +263,6 @@ def test_v30_directory_error_preserves_progress(cfg, collection):
     assert scanner.load_manifest(cfg)["a.md"]["status"] == "indexed"
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V31, ticket #15: remove in the fix")
 def test_v31_zero_top_not_silently_defaulted(cfg, monkeypatch):
     monkeypatch.setattr(query, "load_config", lambda: cfg)
     called = Mock()
@@ -296,7 +276,6 @@ def test_v31_zero_top_not_silently_defaulted(cfg, monkeypatch):
     assert called.call_args.kwargs["top_k"] == 0
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V32, ticket #15: remove in the fix")
 def test_v32_status_reports_database_failure(cfg, monkeypatch, capsys):
     monkeypatch.setattr(config, "load_config", lambda: cfg)
     monkeypatch.setattr(indexer, "get_collection", Mock(side_effect=RuntimeError("db unavailable")))
@@ -305,13 +284,11 @@ def test_v32_status_reports_database_failure(cfg, monkeypatch, capsys):
     assert exit_code != 0 or result.get("error"), "DB failure needs a failure status or explicit error"
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V34, ticket #14: remove in the fix")
 def test_v34_collection_name_rejects_newline():
     with pytest.raises(config.ConfigError):
         config.validate_collection_name("abc_knowledge\n")
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V35, ticket #14: remove in the fix")
 def test_v35_config_discovery_skips_directory(tmp_path):
     parent_config = tmp_path / "knowledgebase.yaml"
     parent_config.write_text("project_name: parent\n")
@@ -321,7 +298,6 @@ def test_v35_config_discovery_skips_directory(tmp_path):
     assert config.find_config(child) == parent_config
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V36, ticket #14: remove in the fix")
 def test_v36_malformed_mcp_has_controlled_error(tmp_path, monkeypatch):
     # Never open or create a credential/config file: substitute a synthetic
     # empty stream only for this path and reject every other attempted open.
@@ -338,7 +314,6 @@ def test_v36_malformed_mcp_has_controlled_error(tmp_path, monkeypatch):
     assert cli.cmd_install_mcp(SimpleNamespace(name="test")) != 0
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V37, ticket #15: remove in the fix")
 def test_v37_empty_query_json_keeps_schema(cfg, collection, capsys):
     collection.count.return_value = 0
     query.query(cfg, "body", as_json=True)

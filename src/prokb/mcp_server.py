@@ -19,6 +19,9 @@ Register in .mcp.json:
 
 import json
 import sys
+import io
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer  # mcp 2.x (FastMCP was renamed)
@@ -26,6 +29,45 @@ from mcp.server.mcpserver import MCPServer  # mcp 2.x (FastMCP was renamed)
 from . import __version__
 from .indexer import get_collection, load_config, load_manifest
 from .query import query as _raw_query
+
+
+class _ThreadOutput:
+    """sys.stdout proxy that routes writes to a per-thread buffer while one is
+    set, else to the real stream. Installed once; never nested."""
+    def __init__(self, fallback):
+        self.fallback = fallback
+        self.local = threading.local()
+
+    def write(self, text):
+        return getattr(self.local, "stream", self.fallback).write(text)
+
+    def flush(self):
+        return getattr(self.local, "stream", self.fallback).flush()
+
+    def __getattr__(self, name):
+        return getattr(self.fallback, name)
+
+
+_output_lock = threading.Lock()
+
+
+@contextmanager
+def _capture_output():
+    with _output_lock:
+        if not isinstance(sys.stdout, _ThreadOutput):
+            sys.stdout = _ThreadOutput(sys.stdout)
+        proxy = sys.stdout
+    previous = getattr(proxy.local, "stream", None)
+    stream = io.StringIO()
+    proxy.local.stream = stream
+    try:
+        yield stream
+    finally:
+        if previous is None:
+            del proxy.local.stream
+        else:
+            proxy.local.stream = previous
+
 
 # Load config once at startup (uses cwd-discovery)
 _config = load_config()
@@ -54,7 +96,7 @@ def knowledge_search(
     path_filter: str | None = None,
     full_text: bool = False,
 ) -> str:
-    """Semantic search over the PolyFastWay knowledge base.
+    """Semantic search over the project knowledge base.
 
     Args:
         question: Natural language query (English works best, Hungarian OK).
@@ -67,20 +109,11 @@ def knowledge_search(
     Returns:
         JSON with query results including score, source file, section, date, and content.
     """
-    import io
-    from contextlib import redirect_stdout
-
-    buf = io.StringIO()
-    with redirect_stdout(buf):
-        _raw_query(
-            _config,
-            question,
-            top_k=top_k,
-            after=after,
-            path_filter=path_filter,
-            full=full_text,
-            as_json=True,
-        )
+    # Capture per thread: concurrent tool calls must not see each other's output,
+    # and nothing may reach the real stdout (it carries the MCP stdio protocol).
+    with _capture_output() as buf:
+        _raw_query(_config, question, top_k=top_k, after=after,
+                   path_filter=path_filter, full=full_text, as_json=True)
 
     output = buf.getvalue().strip()
     if not output:
@@ -157,13 +190,10 @@ def knowledge_list_sources(
             "chunk_count": entry.get("chunk_count", 0),
         })
 
-        if len(results) >= limit:
-            break
-
     return json.dumps({
-        "files": results,
+        "files": results[:max(0, limit)],
         "total_matched": len(results),
-        "truncated": len(results) >= limit,
+        "truncated": len(results) > max(0, limit),
     })
 
 

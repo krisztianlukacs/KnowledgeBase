@@ -60,7 +60,6 @@ def _chunks_for(cfg, relpath):
 
 
 # ---------------------------------------------------------------- V1
-@pytest.mark.xfail(strict=True, reason="bughunt V1, ticket #8: remove in the fix")
 def test_v1_diary_same_title_same_second_keeps_both(tmp_path, monkeypatch):
     from prokb.cli import cmd_diary
     write_default_config(tmp_path / CONFIG_FILENAME, project_name="diarytest")
@@ -82,7 +81,6 @@ def test_v1_diary_same_title_same_second_keeps_both(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------- V2
-@pytest.mark.xfail(strict=True, reason="bughunt V2, ticket #9: remove in the fix")
 def test_v2_configured_chunk_limits_are_honoured(cfg, tmp_path):
     from prokb.indexer import index_file
 
@@ -109,7 +107,6 @@ def test_v2_configured_chunk_limits_are_honoured(cfg, tmp_path):
 
 
 # ---------------------------------------------------------------- V3
-@pytest.mark.xfail(strict=True, reason="bughunt V3, ticket #10: remove in the fix")
 def test_v3_german_source_language_gets_pending_translation(cfg, tmp_path):
     from prokb.scanner import compute_pending
     cfg["translation"] = {**cfg["translation"], "enabled": True,
@@ -125,7 +122,6 @@ def test_v3_german_source_language_gets_pending_translation(cfg, tmp_path):
 
 
 # ---------------------------------------------------------------- V4
-@pytest.mark.xfail(strict=True, reason="bughunt V4A, ticket #11: remove in the fix")
 def test_v4a_index_file_does_not_duplicate_when_old_chunk_delete_fails(cfg, tmp_path):
     from prokb.indexer import get_collection, index_file
 
@@ -154,7 +150,6 @@ def test_v4a_index_file_does_not_duplicate_when_old_chunk_delete_fails(cfg, tmp_
     assert after <= first, f"old+new chunks coexist: {first} -> {after}"
 
 
-@pytest.mark.xfail(strict=True, reason="bughunt V4B, ticket #11: remove in the fix")
 def test_v4b_manifest_entry_kept_when_chunk_delete_fails(cfg, monkeypatch):
     from prokb import indexer
 
@@ -176,7 +171,6 @@ def test_v4b_manifest_entry_kept_when_chunk_delete_fails(cfg, monkeypatch):
 
 
 # ---------------------------------------------------------------- V5
-@pytest.mark.xfail(strict=True, reason="bughunt V5, ticket #11: remove in the fix")
 def test_v5_emptied_file_old_chunks_removed(cfg, tmp_path):
     from prokb.cli import _scan_and_index
     f = tmp_path / "a.md"
@@ -190,7 +184,6 @@ def test_v5_emptied_file_old_chunks_removed(cfg, tmp_path):
 
 
 # ---------------------------------------------------------------- V6
-@pytest.mark.xfail(strict=True, reason="bughunt V6, ticket #12: remove in the fix")
 def test_v6_manifest_survives_ascii_locale_with_non_ascii_filename(tmp_path):
     code = (
         "import sys\n"
@@ -211,7 +204,6 @@ def test_v6_manifest_survives_ascii_locale_with_non_ascii_filename(tmp_path):
 
 
 # ---------------------------------------------------------------- V7
-@pytest.mark.xfail(strict=True, reason="bughunt V7, ticket #12: remove in the fix")
 def test_v7_init_manifest_respects_write_lock(cfg, tmp_path, monkeypatch):
     from prokb import scanner
     from prokb.lock import LockHeldError
@@ -230,7 +222,6 @@ def test_v7_init_manifest_respects_write_lock(cfg, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------- V8
-@pytest.mark.xfail(strict=True, reason="bughunt V8, ticket #11: remove in the fix")
 def test_v8_full_rebuild_does_not_keep_stale_indexed_state(cfg, tmp_path):
     from prokb import indexer
     (tmp_path / "keep.md").write_text("## S\n\n" + "alpha beta gamma delta " * 30)
@@ -246,7 +237,6 @@ def test_v8_full_rebuild_does_not_keep_stale_indexed_state(cfg, tmp_path):
 
 
 # ---------------------------------------------------------------- V9
-@pytest.mark.xfail(strict=True, reason="bughunt V9, ticket #13: remove in the fix")
 def test_v9_symlink_outside_project_not_indexed(tmp_path):
     from prokb.scanner import scan_files
     proj = tmp_path / "proj"
@@ -262,7 +252,6 @@ def test_v9_symlink_outside_project_not_indexed(tmp_path):
 
 
 # ---------------------------------------------------------------- V12
-@pytest.mark.xfail(strict=True, reason="bughunt V12, ticket #12: remove in the fix")
 def test_v12_content_change_with_preserved_mtime_is_detected(cfg, tmp_path):
     from prokb.scanner import compute_pending
     f = tmp_path / "a.md"

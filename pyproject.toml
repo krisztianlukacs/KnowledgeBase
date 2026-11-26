@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prokb"
-version = "0.3.1"
+version = "0.4.0"
 description = "Per-project semantic knowledge base with MCP server — pipx-installable, configurable embedding model + source language."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,6 +18,9 @@ dependencies = [
   "mcp>=2.3,<3",
   "numpy>=1.22",
   "pyyaml>=6.0",
+  # Language detection for any translation.source_language other than the
+  # built-in Hungarian heuristic (it was imported but never declared).
+  "langdetect>=1.0.9",
 ]
 
 [project.scripts]

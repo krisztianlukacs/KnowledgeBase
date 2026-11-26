@@ -77,7 +77,7 @@ embedding:
 
 translation:
   enabled: false                      # set true if source lang needs pre-translation
-  source_language: hu                 # ISO 639-1 code
+  source_language: hu                 # ISO 639-1 code (detected with langdetect)
   target_language: en
   translations_dir: knowledge/translations
 ```
@@ -92,10 +92,10 @@ either:
 
 ```
 kb init                   # create knowledgebase.yaml + directories + .gitignore lines
-kb update [--batch N]     # scan + translate + index (one writer per repo: knowledge/.kb.lock)
-kb query "..." [--top N] [--after DATE] [--path SUBSTRING]   # filters are exact
-kb diary "text" | - | --file PATH [--title T] [--update]   # `-` reads stdin; empty body rejected
-kb status                 # index state
+kb update [--batch N]     # scan + translate + index at most N files (one writer per repo: knowledge/.kb.lock)
+kb query "..." [--top N] [--after DATE] [--path SUBSTRING]   # filters are exact; N >= 1
+kb diary "text" | - | --file PATH [--title T] [--update]   # `-` reads stdin; empty body rejected; never overwrites
+kb status                 # index state; exit 1 + "error" if the vector store is unreadable
 kb mcp                    # run MCP stdio server (called by .mcp.json)
 kb install-skills         # drop /knowledge-* skills into ~/.claude/skills
 kb doctor                 # diagnose: model cache, chroma writable, MCP deps

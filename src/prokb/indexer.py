@@ -16,33 +16,18 @@ import sys
 import time
 from pathlib import Path
 
-import yaml
-
 from .chunker import chunk_markdown
 from .config import (
-    load_config as _load_config, manifest_path as _manifest_path,
+    load_config as _load_config,
     chroma_db_path as _chroma_db_path, translations_dir as _translations_dir,
-    project_root,
+    project_root, contained_path,
 )
+
+from .scanner import load_manifest, save_manifest
 
 
 def load_config():
     return _load_config()
-
-
-def load_manifest(config):
-    mp = _manifest_path(config)
-    if mp.exists():
-        with open(mp) as f:
-            return json.load(f)
-    return {}
-
-
-def save_manifest(config, manifest):
-    mp = _manifest_path(config)
-    mp.parent.mkdir(parents=True, exist_ok=True)
-    with open(mp, "w") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
 
 
 def get_chroma_client(config):
@@ -84,18 +69,17 @@ def get_source_path(config, relpath, manifest_entry):
     if (config["translation"].get("enabled", False)
             and manifest_entry.get("language") == source_lang):
         trans_dir = _translations_dir(config)
-        tr_path = trans_dir / relpath
+        tr_path = contained_path(trans_dir, relpath)
         if tr_path.exists():
             return str(tr_path)
         return None
     else:
         # Native-language file — use original
-        return str(root / relpath)
+        return str(contained_path(root, relpath))
 
 
 def index_file(collection, config, relpath, manifest_entry):
     """Index a single file: chunk → embed → store."""
-    root = project_root(config)
     file_to_embed = get_source_path(config, relpath, manifest_entry)
 
     if file_to_embed is None:
@@ -108,18 +92,15 @@ def index_file(collection, config, relpath, manifest_entry):
         return 0, "file_not_found"
 
     if not text.strip():
-        return 0, "empty_file"
+        delete_file_chunks(collection, relpath)
+        return 0, "ok"
 
-    # Remove translation header comment if present
-    text = text.lstrip()
-    if text.startswith("<!--"):
-        end = text.find("-->")
-        if end != -1:
-            text = text[end + 3:].lstrip()
-
+    # Source comments are content. Translation routing alone does not make
+    # an arbitrary HTML comment a generated translation marker.
     date = manifest_entry.get("date", "")
-    max_tokens = config.get("max_chunk_tokens", 1500)
-    min_tokens = config.get("min_chunk_tokens", 50)
+    chunking = config.get("chunking", {})
+    max_tokens = chunking.get("max_tokens", 1500)
+    min_tokens = chunking.get("min_tokens", 50)
 
     chunks = chunk_markdown(
         text,
@@ -130,7 +111,8 @@ def index_file(collection, config, relpath, manifest_entry):
     )
 
     if not chunks:
-        return 0, "no_chunks"
+        delete_file_chunks(collection, relpath)
+        return 0, "ok"
 
     # Build chunk IDs using hash of relpath + content hash (avoids collisions
     # when different files have the same content hash)
@@ -139,13 +121,8 @@ def index_file(collection, config, relpath, manifest_entry):
     content_hash = manifest_entry.get("original_hash", "unknown")[:8]
     hash_prefix = f"{path_hash}_{content_hash}"
 
-    # Delete old chunks for this file (if any)
-    try:
-        existing = collection.get(where={"source_file": relpath})
-        if existing and existing["ids"]:
-            collection.delete(ids=existing["ids"])
-    except Exception:
-        pass  # Collection might be empty or field doesn't exist yet
+    # A failed deletion must abort before any replacement chunks are added.
+    delete_file_chunks(collection, relpath)
 
     # Prepare batch
     ids = []
@@ -179,21 +156,18 @@ def index_file(collection, config, relpath, manifest_entry):
 
 def delete_file_chunks(collection, relpath):
     """Remove all chunks for a file from ChromaDB."""
-    try:
-        existing = collection.get(where={"source_file": relpath})
-        if existing and existing["ids"]:
-            collection.delete(ids=existing["ids"])
-            return len(existing["ids"])
-    except Exception:
-        pass
+    existing = collection.get(where={"source_file": relpath})
+    if existing and existing["ids"]:
+        collection.delete(ids=existing["ids"])
+        return len(existing["ids"])
     return 0
 
 
-def run_incremental(config):
+def run_incremental(config, batch=None):
     """Process only pending_index files (holds the per-repo write lock)."""
     from .lock import write_lock
     with write_lock(config):
-        return _run_incremental(config)
+        return _run_incremental(config, batch=batch)
 
 
 def run_full(config):
@@ -203,53 +177,54 @@ def run_full(config):
         return _run_full(config)
 
 
-def _run_incremental(config):
+def _run_incremental(config, batch=None):
+    if batch is not None and batch < 1:
+        raise ValueError("batch must be positive")
     manifest = load_manifest(config)
     collection = get_collection(config)
-
-    indexed = 0
-    skipped = 0
-    errors = 0
-    deleted = 0
+    indexed = skipped = errors = deleted = attempted = 0
 
     for relpath, entry in sorted(manifest.items()):
         status = entry.get("status", "")
-
-        if status == "pending_index":
-            count, result = index_file(collection, config, relpath, entry)
-            if result == "ok":
-                entry["status"] = "indexed"
-                entry["indexed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                entry["chunk_count"] = count
-                indexed += 1
-                print(f"  Indexed: {relpath} ({count} chunks)")
-            elif result == "no_translation":
-                skipped += 1
-                # Keep as pending — translation not yet done
-            else:
-                errors += 1
-                entry["status"] = "error"
-                entry["error"] = result
-                print(f"  Error: {relpath} — {result}", file=sys.stderr)
-
-        elif status == "deleted":
-            n = delete_file_chunks(collection, relpath)
-            deleted += 1
-            # Remove from manifest
-            # (handled below to avoid dict mutation during iteration)
-
-    # Clean up deleted entries
-    to_delete = [rp for rp, e in manifest.items() if e.get("status") == "deleted"]
-    for rp in to_delete:
-        # Also remove translation if exists
-        if config["translation"].get("enabled"):
-            tr_path = _translations_dir(config) / rp
-            if tr_path.exists():
-                tr_path.unlink()
-        del manifest[rp]
+        if status == "pending_translation" and not config["translation"].get("enabled"):
+            status = entry["status"] = "pending_index"
+        if status not in {"pending_index", "deleted"}:
+            continue
+        if status == "pending_index" and batch is not None and attempted >= batch:
+            continue
+        try:
+            if status == "pending_index":
+                attempted += 1
+                count, result = index_file(collection, config, relpath, entry)
+                if result == "ok":
+                    entry.update(status="indexed", chunk_count=count,
+                                 indexed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                    entry.pop("error", None)
+                    indexed += 1
+                    print(f"  Indexed: {relpath} ({count} chunks)")
+                elif result == "no_translation":
+                    skipped += 1
+                else:
+                    entry.update(status="error", error=result)
+                    errors += 1
+            elif status == "deleted":
+                # Validate before deleting either the translation or its chunks.
+                tr_path = contained_path(_translations_dir(config), relpath)
+                delete_file_chunks(collection, relpath)
+                if config["translation"].get("enabled") and tr_path.exists():
+                    tr_path.unlink()
+                del manifest[relpath]
+                deleted += 1
+        except Exception as exc:
+            # Preserve pending/deleted status so a failed operation is retried.
+            errors += 1
+            entry["error"] = type(exc).__name__
+            print(f"  Error: {relpath} — {type(exc).__name__}", file=sys.stderr)
+        finally:
+            # Completed files survive an error on a later file.
+            save_manifest(config, manifest)
 
     save_manifest(config, manifest)
-
     print(f"\nIncremental index complete: {indexed} indexed, {skipped} skipped (need translation), "
           f"{errors} errors, {deleted} deleted")
     return indexed
@@ -271,10 +246,16 @@ def _run_full(config):
     skipped = 0
     errors = 0
 
+    # The collection is empty now: no entry may still claim indexed chunks.
+    # A missing source becomes "deleted" so the next incremental run drops the
+    # entry (and its translation); every other entry is re-indexed below.
+    for relpath, entry in manifest.items():
+        missing = not contained_path(root, relpath).exists()
+        entry.update(status="deleted" if missing else "pending_index", chunk_count=0)
+    save_manifest(config, manifest)
+
     for relpath, entry in sorted(manifest.items()):
-        # Skip files without content
-        original = root / relpath
-        if not original.exists():
+        if entry["status"] == "deleted":
             continue
 
         count, result = index_file(collection, config, relpath, entry)
@@ -286,6 +267,7 @@ def _run_full(config):
             if indexed % 50 == 0:
                 print(f"  Progress: {indexed} files indexed...")
         elif result == "no_translation":
+            entry["status"] = "pending_translation"
             skipped += 1
         else:
             errors += 1
