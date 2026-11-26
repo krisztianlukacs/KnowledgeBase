@@ -42,7 +42,44 @@ def auto_reindex(config):
 
     print(f"Auto-indexing {pending} pending files...", file=sys.stderr)
     from .indexer import run_incremental
-    run_incremental(config)
+    from .lock import LockHeldError
+    try:
+        run_incremental(config)
+    except LockHeldError as e:
+        # A writer is already indexing; searching the current index is still fine.
+        print(f"Skipping auto-reindex: {e}", file=sys.stderr)
+
+
+def _exact_filtered_search(config, collection, question, top_k, path_filter, after):
+    """Exact (brute-force cosine) search over the chunks passing the filters.
+
+    Returns (ids, documents, metadatas, distances), best match first, at most
+    top_k long. Distances are cosine distances (0 = identical), like chroma's.
+    """
+    import numpy as np
+    from .indexer import get_embedding_function
+
+    got = collection.get(include=["metadatas", "documents", "embeddings"])
+    keep = [
+        i for i, meta in enumerate(got["metadatas"])
+        if (not path_filter or path_filter in (meta or {}).get("source_file", ""))
+        and (not after or (meta or {}).get("date", "") >= after)
+    ]
+    if not keep:
+        return [], [], [], []
+
+    q = np.asarray(get_embedding_function(config)([question])[0], dtype=float)
+    emb = np.asarray([got["embeddings"][i] for i in keep], dtype=float)
+    denom = np.linalg.norm(emb, axis=1) * np.linalg.norm(q)
+    denom[denom == 0] = 1.0
+    dist = 1.0 - (emb @ q) / denom
+    order = np.argsort(dist, kind="stable")[:top_k]
+    return (
+        [got["ids"][keep[j]] for j in order],
+        [got["documents"][keep[j]] for j in order],
+        [got["metadatas"][keep[j]] for j in order],
+        [float(dist[j]) for j in order],
+    )
 
 
 def query(config, question, top_k=10, after=None, path_filter=None, full=False, as_json=False):
@@ -58,52 +95,38 @@ def query(config, question, top_k=10, after=None, path_filter=None, full=False, 
             print("Index is empty. Run /knowledge-update or `python knowledge/indexer.py --full` first.")
         return
 
-    # Build where filter
-    where_filter = None
-    where_clauses = []
-
-    if after:
-        where_clauses.append({"date": {"$gte": after}})
-    if path_filter:
-        where_clauses.append({"source_file": {"$contains": path_filter}})
-
-    if len(where_clauses) == 1:
-        where_filter = where_clauses[0]
-    elif len(where_clauses) > 1:
-        where_filter = {"$and": where_clauses}
-
-    # Query
-    try:
+    # No chroma `where` clause: chromadb >= 1.5 has no substring `$contains`
+    # on metadata (silently returns nothing) and `$gte` only accepts numbers
+    # (raises on date strings). With a filter we select the matching chunks
+    # exactly in Python and rank them by brute-force cosine distance. We do NOT
+    # use an ANN query (even with `ids=`): HNSW recall can silently miss
+    # matches among near-identical chunks.
+    total = collection.count()
+    if path_filter or after:
+        ids, documents, metadatas, distances = _exact_filtered_search(
+            config, collection, question, top_k, path_filter, after)
+    else:
         results = collection.query(
             query_texts=[question],
-            n_results=min(top_k, collection.count()),
-            where=where_filter,
+            n_results=min(top_k, total),
             include=["documents", "metadatas", "distances"],
         )
-    except Exception as e:
-        if "where" in str(e).lower() or "filter" in str(e).lower():
-            # Retry without filter
-            results = collection.query(
-                query_texts=[question],
-                n_results=min(top_k, collection.count()),
-                include=["documents", "metadatas", "distances"],
-            )
+        if results and results["ids"] and results["ids"][0]:
+            ids = results["ids"][0]
+            documents = results["documents"][0]
+            metadatas = results["metadatas"][0]
+            distances = results["distances"][0]
         else:
-            raise
+            ids = documents = metadatas = distances = []
 
-    if not results or not results["ids"] or not results["ids"][0]:
+    if not ids:
         if as_json:
-            print(json.dumps({"query": question, "results": [], "total_chunks": collection.count()}))
+            print(json.dumps({"query": question, "results": [], "total_chunks": total}))
         else:
             print(f"No results for: \"{question}\"")
         return
 
-    ids = results["ids"][0]
-    documents = results["documents"][0]
-    metadatas = results["metadatas"][0]
-    distances = results["distances"][0]
-
-    # Apply path filter manually if ChromaDB $contains didn't work
+    # Apply the path substring filter (and re-check `after`) in Python
     filtered = []
     for i in range(len(ids)):
         meta = metadatas[i]

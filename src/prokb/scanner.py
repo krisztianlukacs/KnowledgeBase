@@ -131,10 +131,32 @@ def scan_files(config):
     exclude_dirs = set(scan.get("exclude_dirs", []))
     exclude_files = set(scan.get("exclude_files", []))
     files = {}
+    worktree_cache: dict[Path, bool] = {}
+
+    def in_worktree(fpath: Path) -> bool:
+        """True if any directory strictly below root holds a `.git` FILE
+        (the marker of a git worktree / submodule checkout)."""
+        d = fpath.parent
+        chain = []
+        result = False
+        while d != root and root in d.parents:
+            if d in worktree_cache:
+                result = worktree_cache[d]
+                break
+            chain.append(d)
+            if (d / ".git").is_file():
+                result = True
+                break
+            d = d.parent
+        for c in chain:
+            worktree_cache[c] = result
+        return result
 
     for pattern in include_patterns:
         for fpath in root.glob(pattern):
             if not fpath.is_file():
+                continue
+            if in_worktree(fpath):
                 continue
             relpath = str(fpath.relative_to(root))
 

@@ -61,6 +61,37 @@ def test_scan_respects_include_pattern(tmp_path):
     assert "src/code.py" in found_py
 
 
+def test_scan_ignores_claude_worktrees(tmp_path):
+    _w(tmp_path / ".claude" / "worktrees" / "x" / "README.md")
+    _w(tmp_path / "keep.md")
+    assert set(scan_files(_cfg(tmp_path))) == {"keep.md"}
+
+
+def test_scan_ignores_dir_with_git_file_even_if_not_excluded(tmp_path):
+    _w(tmp_path / "wt" / "deep" / "README.md")
+    (tmp_path / "wt" / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n")
+    _w(tmp_path / "other" / "ok.md")
+    found = scan_files(_cfg(tmp_path, exclude_dirs=[]))
+    assert "wt/deep/README.md" not in found
+    assert "other/ok.md" in found
+
+
+def test_scan_still_scans_root_with_git_file_or_dir(tmp_path):
+    _w(tmp_path / "a.md")
+    (tmp_path / ".git").write_text("gitdir: /elsewhere\n")  # root is itself a worktree
+    assert "a.md" in scan_files(_cfg(tmp_path))
+    (tmp_path / ".git").unlink()
+    (tmp_path / ".git").mkdir()
+    assert "a.md" in scan_files(_cfg(tmp_path))
+
+
+def test_scan_git_dir_below_root_is_not_a_worktree_marker(tmp_path):
+    # A nested checkout with a real .git DIRECTORY is not skipped by this rule.
+    _w(tmp_path / "vendor" / "lib" / "doc.md")
+    (tmp_path / "vendor" / "lib" / ".git").mkdir()
+    assert "vendor/lib/doc.md" in scan_files(_cfg(tmp_path, exclude_dirs=[]))
+
+
 # ---- extract_date --------------------------------------------------------
 
 def test_extract_date_from_path():

@@ -10,3 +10,8 @@ venv/
 .mypy_cache/
 .env
 .DS_Store
+
+# kb (prokb) generated local index state, rebuilt by kb update
+knowledge/chroma_db/
+knowledge/manifest.json
+knowledge/.kb.lock

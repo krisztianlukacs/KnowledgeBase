@@ -190,7 +190,20 @@ def delete_file_chunks(collection, relpath):
 
 
 def run_incremental(config):
-    """Process only pending_index files."""
+    """Process only pending_index files (holds the per-repo write lock)."""
+    from .lock import write_lock
+    with write_lock(config):
+        return _run_incremental(config)
+
+
+def run_full(config):
+    """Full rebuild: re-chunk and re-embed everything (holds the write lock)."""
+    from .lock import write_lock
+    with write_lock(config):
+        return _run_full(config)
+
+
+def _run_incremental(config):
     manifest = load_manifest(config)
     collection = get_collection(config)
 
@@ -242,8 +255,7 @@ def run_incremental(config):
     return indexed
 
 
-def run_full(config):
-    """Full rebuild: re-chunk and re-embed everything."""
+def _run_full(config):
     manifest = load_manifest(config)
     root = project_root(config)
 
@@ -324,16 +336,21 @@ def main():
 
     config = load_config()
 
-    if args.status:
-        show_status(config)
-    elif args.full:
-        print("Starting full rebuild...")
-        run_full(config)
-    elif args.incremental:
-        print("Starting incremental index...")
-        run_incremental(config)
-    else:
-        parser.print_help()
+    from .lock import LockHeldError
+    try:
+        if args.status:
+            show_status(config)
+        elif args.full:
+            print("Starting full rebuild...")
+            run_full(config)
+        elif args.incremental:
+            print("Starting incremental index...")
+            run_incremental(config)
+        else:
+            parser.print_help()
+    except LockHeldError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

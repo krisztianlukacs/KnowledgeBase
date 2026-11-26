@@ -28,6 +28,35 @@ def _resolve_skills_src() -> Path:
     return Path(__file__).parent / "skills"
 
 
+GITIGNORE_HEADER = "# kb (prokb) generated local index state, rebuilt by kb update"
+GITIGNORE_LINES = [
+    "knowledge/chroma_db/",
+    "knowledge/manifest.json",
+    "knowledge/.kb.lock",
+]
+
+
+def _ensure_gitignore(root: Path) -> list[str]:
+    """Idempotently add the kb index-state lines to root/.gitignore.
+    Returns the lines that were added."""
+    gi = root / ".gitignore"
+    existing = gi.read_text() if gi.exists() else ""
+    present = {ln.strip() for ln in existing.splitlines()}
+    missing = [ln for ln in GITIGNORE_LINES if ln not in present]
+    if not missing:
+        return []
+    block = []
+    if existing and not existing.endswith("\n"):
+        block.append("")
+    if existing.strip():
+        block.append("")
+    if GITIGNORE_HEADER not in present:
+        block.append(GITIGNORE_HEADER)
+    block.extend(missing)
+    gi.write_text(existing + "\n".join(block) + "\n")
+    return missing
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     from .config import CONFIG_FILENAME, write_default_config
 
@@ -37,14 +66,24 @@ def cmd_init(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
 
+    from .config import ConfigError
+
     preset = args.preset or "general"
     project_name = args.project_name or Path.cwd().name
-    write_default_config(dest, project_name=project_name, preset=preset)
+    try:
+        write_default_config(dest, project_name=project_name, preset=preset)
+    except ConfigError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
     print(f"Created {dest}")
 
     # Create knowledge/ directory structure
     (Path.cwd() / "knowledge").mkdir(exist_ok=True)
     print(f"Created {Path.cwd() / 'knowledge'}/")
+
+    added = _ensure_gitignore(Path.cwd())
+    if added:
+        print(f"Added to .gitignore: {', '.join(added)}")
 
     # Offer to install skills if they're not yet in ~/.claude/skills
     skills_dst = Path.home() / ".claude" / "skills"
@@ -59,7 +98,16 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def _scan_and_index(cfg, index_only: bool = False) -> int:
     """Scan files → update manifest → index pending files. Shared by `kb update`
-    and `kb diary --update`. Returns the number of files indexed this run."""
+    and `kb diary --update`. Returns the number of files indexed this run.
+
+    Holds the per-repo write lock for the whole scan+index (concurrent writers
+    corrupt the HNSW index); raises LockHeldError if another writer is active."""
+    from .lock import write_lock
+    with write_lock(cfg):
+        return _scan_and_index_locked(cfg, index_only)
+
+
+def _scan_and_index_locked(cfg, index_only: bool = False) -> int:
     from .indexer import run_incremental
     from .scanner import compute_pending, load_manifest, save_manifest
 
@@ -115,7 +163,12 @@ def cmd_update(args: argparse.Namespace) -> int:
     if args.status:
         return cmd_status(args)
 
-    _scan_and_index(cfg, index_only=args.index_only)
+    from .lock import LockHeldError
+    try:
+        _scan_and_index(cfg, index_only=args.index_only)
+    except LockHeldError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -303,6 +356,39 @@ def cmd_diary(args: argparse.Namespace) -> int:
     from .config import load_config, project_root
     from datetime import datetime, timezone
 
+    content_arg = getattr(args, "content", None)
+    file_arg = getattr(args, "file", None)
+
+    # Resolve the body BEFORE touching the filesystem, so a bad invocation
+    # writes nothing and indexes nothing.
+    if content_arg is not None and file_arg is not None:
+        print("ERROR: give the note either as an argument or via --file, not both.",
+              file=sys.stderr)
+        return 2
+    if file_arg is not None:
+        try:
+            body = Path(file_arg).read_text()
+        except OSError as e:
+            print(f"ERROR: cannot read --file {file_arg}: {e}", file=sys.stderr)
+            return 2
+    elif content_arg == "-":
+        if sys.stdin.isatty():
+            print("ERROR: `-` reads the note from stdin, but stdin is a terminal. "
+                  "Pipe the text in (e.g. `... | kb diary -`) or use --file PATH.",
+                  file=sys.stderr)
+            return 2
+        body = sys.stdin.read()
+    elif content_arg is not None:
+        body = content_arg
+    else:
+        print("ERROR: no note given. Pass the text, `-` (stdin) or --file PATH.",
+              file=sys.stderr)
+        return 2
+    if not body.strip():
+        print("ERROR: the diary note is empty (or whitespace only); nothing written.",
+              file=sys.stderr)
+        return 2
+
     cfg = load_config()
     root = project_root(cfg)
     diary_dir = root / "knowledge" / "diary"
@@ -322,13 +408,19 @@ def cmd_diary(args: argparse.Namespace) -> int:
 ---
 
 """
-    fname.write_text(header + args.content)
+    fname.write_text(header + body)
     print(f"Wrote {fname}")
 
     # --update indexes the new entry immediately (write + index in one call), so a
     # development summary lands in the searchable KB without a second command.
     if getattr(args, "update", False):
-        n = _scan_and_index(cfg)
+        from .lock import LockHeldError
+        try:
+            n = _scan_and_index(cfg)
+        except LockHeldError as e:
+            print(f"ERROR: {e}. The entry was written but NOT indexed; "
+                  f"run `kb update` later.", file=sys.stderr)
+            return 1
         print(f"Indexed ({n} file(s) processed).")
     else:
         print("Run `kb update` to index this entry into the knowledge base.")
@@ -388,7 +480,11 @@ def main() -> None:
 
     # diary
     s_di = sub.add_parser("diary", help="Log a session summary / note")
-    s_di.add_argument("content", help="The summary/note content (markdown allowed)")
+    s_di.add_argument("content", nargs="?", default=None,
+                      help="The summary/note content (markdown allowed); "
+                           "`-` reads it from stdin")
+    s_di.add_argument("--file", default=None, metavar="PATH",
+                      help="Read the note body from PATH (instead of the positional text)")
     s_di.add_argument("--title", default=None)
     s_di.add_argument("--session", default=None)
     s_di.add_argument("--agent", default=None)

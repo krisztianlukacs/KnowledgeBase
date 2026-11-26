@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Installed by `fleet install-hooks`. The logic lives in fleettools
+# (fleet check-repo) so a fix reaches every repo at once instead of being
+# re-implemented per project. WHICH checks run is decided by the repo's
+# type in .repo.json — a course repo is not held to the service contract.
+set -eu
+
+if ! command -v fleet >/dev/null 2>&1; then
+    # Loud, never silent: a missing tool must not read as a passing check.
+    echo "" >&2
+    echo "pre-commit: BLOCKED — 'fleet' is not on PATH, so the repo policy" >&2
+    echo "  cannot be checked. This is not a pass." >&2
+    echo "" >&2
+    echo "  Fix: pipx install -e ~/.agents/fleettools" >&2
+    echo "  Bypass (only if you know why): git commit --no-verify" >&2
+    echo "" >&2
+    exit 1
+fi
+
+exec fleet check-repo --scope staged

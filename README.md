@@ -91,9 +91,10 @@ either:
 ## CLI commands
 
 ```
-kb init                   # create knowledgebase.yaml + directories
-kb update [--batch N]     # scan + translate + index
-kb query "..." [--top N] [--after DATE] [--path PATTERN]
+kb init                   # create knowledgebase.yaml + directories + .gitignore lines
+kb update [--batch N]     # scan + translate + index (one writer per repo: knowledge/.kb.lock)
+kb query "..." [--top N] [--after DATE] [--path SUBSTRING]   # filters are exact
+kb diary "text" | - | --file PATH [--title T] [--update]   # `-` reads stdin; empty body rejected
 kb status                 # index state
 kb mcp                    # run MCP stdio server (called by .mcp.json)
 kb install-skills         # drop /knowledge-* skills into ~/.claude/skills

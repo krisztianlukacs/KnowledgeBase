@@ -4,16 +4,15 @@
 # entry does not get indexed + retrieved.
 set -euo pipefail
 
-SRC="/home/lukacsk/Development/KnowledgeBase"
-TEST="/tmp/claude-1000/-home-lukacsk-Development/a59f70e8-b480-42e9-93d1-a19e8ead2702/scratchpad/kbfixtest"
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEST="$(mktemp -d -t kbfixtest.XXXXXX)"
+trap 'rm -rf "$TEST"' EXIT
 
 echo "=== 1. Reinstall prokb from local source ==="
 pipx install --force "$SRC"
 "$(dirname "$(readlink -f "$(command -v kb)")")/python" -c "import prokb; print('installed prokb', prokb.__version__)"
 
 echo "=== 2. Fresh test project ==="
-rm -rf "$TEST"
-mkdir -p "$TEST"
 cd "$TEST"
 kb init --project-name kbfixtest
 

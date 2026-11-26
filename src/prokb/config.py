@@ -12,7 +12,7 @@ Schema (v1):
 
     scan:
       include: ["**/*.md", "src/**/*.py"]
-      exclude_dirs: [".git", "venv", "node_modules", "__pycache__"]
+      exclude_dirs: [".git", ".claude", "venv", "node_modules", "__pycache__"]
       exclude_files: ["knowledgebase.yaml"]
 
     embedding:
@@ -36,6 +36,7 @@ Schema (v1):
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,7 @@ DEFAULTS: dict[str, Any] = {
             #              NOTE: knowledge/diary/ is whitelisted in scanner.py —
             #              `kb diary` entries ARE indexed despite this exclusion.
             ".mempalace", "mlruns", "data",
+            ".claude", ".hypothesis",   # agent worktrees/settings, test caches
         ],
         "exclude_files": [CONFIG_FILENAME, "manifest.json"],
     },
@@ -84,6 +86,39 @@ DEFAULTS: dict[str, Any] = {
 
 class ConfigError(RuntimeError):
     pass
+
+
+# ChromaDB collection-name rule: 3-512 chars of [a-zA-Z0-9._-], starting and
+# ending with an alphanumeric.
+_COLLECTION_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,510}[a-zA-Z0-9]$")
+
+
+def validate_collection_name(name: str) -> str:
+    """Return `name` if chroma accepts it, else raise ConfigError."""
+    if not isinstance(name, str) or not _COLLECTION_RE.match(name):
+        raise ConfigError(
+            f"Invalid collection_name {name!r}: ChromaDB requires 3-512 characters "
+            f"from [a-zA-Z0-9._-], starting and ending with a letter or digit."
+        )
+    return name
+
+
+def derive_collection_name(project_name: str) -> str:
+    """Derive a valid chroma collection name (`<safe>_knowledge`) from a project name.
+
+    Invalid characters become underscores, leading/trailing non-alphanumerics
+    are stripped (so `.agents` -> `agents_knowledge`). Raises ConfigError if
+    nothing usable remains (e.g. a name made only of symbols).
+    """
+    safe = re.sub(r"[^a-zA-Z0-9]", "_", str(project_name))
+    safe = safe.strip("_")
+    if not safe:
+        raise ConfigError(
+            f"Cannot derive a valid collection name from project name "
+            f"{project_name!r}: it contains no letters or digits. "
+            f"Set `collection_name` explicitly."
+        )
+    return validate_collection_name(f"{safe}_knowledge")
 
 
 def find_config(start: Path | None = None) -> Path:
@@ -134,8 +169,9 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     if not cfg.get("project_name"):
         cfg["project_name"] = cfg_path.parent.name
     if not cfg.get("collection_name"):
-        safe = cfg["project_name"].replace("-", "_").replace(".", "_")
-        cfg["collection_name"] = f"{safe}_knowledge"
+        cfg["collection_name"] = derive_collection_name(cfg["project_name"])
+    else:
+        validate_collection_name(cfg["collection_name"])
 
     return cfg
 
@@ -164,7 +200,9 @@ def write_default_config(dest: Path, project_name: str | None = None,
     'hu-translate' (Claude-assisted HU→EN translation before indexing).
     """
     project_name = project_name or dest.parent.name
-    safe = project_name.replace("-", "_").replace(".", "_")
+    collection_name = derive_collection_name(project_name)
+    exclude_dirs_yaml = "\n".join(
+        f"    - {d}" for d in DEFAULTS["scan"]["exclude_dirs"])
 
     if preset == "multilingual":
         embedding_model = "intfloat/multilingual-e5-large"
@@ -181,23 +219,18 @@ def write_default_config(dest: Path, project_name: str | None = None,
 
 version: 1
 project_name: {project_name}
-collection_name: {safe}_knowledge
+collection_name: {collection_name}
 
 scan:
   include:
     - "**/*.md"
     # - "src/**/*.py"
     # - "tools/**/*.py"
+  # Rendered from DEFAULTS in config.py (one list, no drift). `knowledge` is
+  # excluded (chroma_db/manifest/translations) but knowledge/diary/ is still
+  # indexed (scanner.py whitelist); `.claude` holds agent worktrees.
   exclude_dirs:
-    - .git
-    - venv
-    - .venv
-    - node_modules
-    - __pycache__
-    - knowledge            # self-directory excluded (chroma_db/manifest/translations);
-    #                        knowledge/diary/ is still indexed — see scanner.py whitelist
-    - mlruns
-    - data
+{exclude_dirs_yaml}
   exclude_files:
     - knowledgebase.yaml
     - manifest.json

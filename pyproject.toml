@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prokb"
-version = "0.2.0"
+version = "0.3.0"
 description = "Per-project semantic knowledge base with MCP server — pipx-installable, configurable embedding model + source language."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,6 +16,7 @@ dependencies = [
   "chromadb>=1.0",
   "sentence-transformers>=5.0",
   "mcp>=1.0",
+  "numpy>=1.22",
   "pyyaml>=6.0",
 ]
 
@@ -42,6 +43,9 @@ prokb = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Test the working-tree source, not whatever pipx has installed in site-packages.
+pythonpath = ["src"]
 # The model-backed index+query roundtrip is opt-in (it downloads/loads the
 # sentence-transformers model). Run it with: KB_RUN_INTEGRATION=1 pytest
 addopts = "-q"
+filterwarnings = ["error"]

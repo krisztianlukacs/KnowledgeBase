@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Installed by `fleet install-hooks`. The last gate before the code is on
+# GitHub — and the one that also catches whatever a `--no-verify` commit slipped
+# past, because it inspects the working tree rather than one staged diff.
+set -eu
+
+if ! command -v fleet >/dev/null 2>&1; then
+    echo "" >&2
+    echo "pre-push: BLOCKED — 'fleet' is not on PATH, so the repo policy" >&2
+    echo "  cannot be checked. This is not a pass." >&2
+    echo "" >&2
+    echo "  Fix: pipx install -e ~/.agents/fleettools" >&2
+    echo "  Bypass (only if you know why): git push --no-verify" >&2
+    echo "" >&2
+    exit 1
+fi
+
+exec fleet check-repo --scope push
